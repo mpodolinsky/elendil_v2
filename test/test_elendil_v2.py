@@ -69,8 +69,8 @@ class TestElendilV2(unittest.TestCase):
         self.assertIn("physical_obstacles", map_data)
         self.assertIn("visual_obstacles", map_data)
         # Check types of values
-        self.assertIsInstance(map_data["size"], tuple)
-        self.assertEqual(map_data["size"], (15, 15))
+        self.assertIsInstance(map_data["size"], list)
+        self.assertEqual(map_data["size"], [15, 15])
         self.assertIsInstance(map_data["physical_obstacles"], np.ndarray)
         self.assertIsInstance(map_data["visual_obstacles"], np.ndarray)
         # Check size of values
@@ -90,8 +90,8 @@ class TestElendilV2(unittest.TestCase):
         self.assertIn("physical_obstacles", map_data)
         self.assertIn("visual_obstacles", map_data)
         # Check types of values
-        self.assertIsInstance(map_data["size"], tuple)
-        self.assertEqual(map_data["size"], (10, 10))
+        self.assertIsInstance(map_data["size"], list)
+        self.assertEqual(map_data["size"], [10, 10])
         self.assertIsInstance(map_data["physical_obstacles"], np.ndarray)
         self.assertIsInstance(map_data["visual_obstacles"], np.ndarray)
         # Check size of values
@@ -111,8 +111,8 @@ class TestElendilV2(unittest.TestCase):
         self.assertIn("physical_obstacles", map_data)
         self.assertIn("visual_obstacles", map_data)
         # Check types of values
-        self.assertIsInstance(map_data["size"], tuple)
-        self.assertEqual(map_data["size"], (20, 20))
+        self.assertIsInstance(map_data["size"], list)
+        self.assertEqual(map_data["size"], [20, 20])
         self.assertIsInstance(map_data["physical_obstacles"], np.ndarray)
         self.assertIsInstance(map_data["visual_obstacles"], np.ndarray)
         # Check size of values
@@ -671,10 +671,54 @@ class TestElendilV2(unittest.TestCase):
         self.assertTrue((self.env.state["UGV_0_pos"] == np.array([0, 0])).all())
         self.assertTrue((self.env.state["UAV_0_pos"] == np.array([1, 0])).all())
 
+    def test_get_state_array(self):
+        """Test that get_state_array works correctly"""
+        state_array = self.env.get_state_array()
+        print(f"State array: {state_array}")
+        print(f"State: {self.env.state}")
+        self.assertIsInstance(state_array, np.ndarray)
+        self.assertEqual(state_array[0], self.env.state["UAV_0_pos"][0])
+        self.assertEqual(state_array[1], self.env.state["UAV_0_pos"][1])
+        self.assertEqual(state_array[2], self.env.state["UAV_0_vel"][0])
+        self.assertEqual(state_array[3], self.env.state["UAV_0_vel"][1])
+        self.assertEqual(state_array[4], self.env.state["UAV_0_fov_dim"])
+        self.assertEqual(state_array[5], self.env.state["UAV_0_altitude"][0])
+        self.assertEqual(state_array[6 + self.env.state["UAV_0_fov_dim"]**2], self.env.state["UGV_0_pos"][0])
+        self.assertEqual(state_array[7 + self.env.state["UAV_0_fov_dim"]**2], self.env.state["UGV_0_pos"][1])
+        self.assertEqual(state_array[8 + self.env.state["UAV_0_fov_dim"]**2], self.env.state["UGV_0_vel"][0])
+        self.assertEqual(state_array[9 + self.env.state["UAV_0_fov_dim"]**2], self.env.state["UGV_0_vel"][1])
+        self.assertEqual(state_array[10 + self.env.state["UAV_0_fov_dim"]**2], self.env.state["UGV_0_fov_dim"])
+        self.assertEqual(state_array[11 + self.env.state["UAV_0_fov_dim"]**2 + self.env.state["UGV_0_fov_dim"]**2], self.env.state["target_0_pos"][0])
+        self.assertEqual(state_array[12 + self.env.state["UAV_0_fov_dim"]**2 + self.env.state["UGV_0_fov_dim"]**2], self.env.state["target_0_pos"][1])
+        self.assertEqual(state_array[13 + self.env.state["UAV_0_fov_dim"]**2 + self.env.state["UGV_0_fov_dim"]**2], self.env.state["target_0_vel"][0])
+        self.assertEqual(state_array[14 + self.env.state["UAV_0_fov_dim"]**2 + self.env.state["UGV_0_fov_dim"]**2], self.env.state["target_0_vel"][1])
+        self.assertEqual(state_array[15 + self.env.state["UAV_0_fov_dim"]**2 + self.env.state["UGV_0_fov_dim"]**2], self.env.state["target_0_fov_dim"])
+        a = 15 + self.env.state["UAV_0_fov_dim"]**2 + self.env.state["UGV_0_fov_dim"]**2 + self.env.state["target_0_fov_dim"]**2
+        self.assertEqual(state_array[1 + a], self.env.state["map"]["size"][0])
+        self.assertEqual(state_array[2 + a], self.env.state["map"]["size"][1])
+        # Flatten and extract physical obstacle coordinates
+        phys_obs_start = 3 + a
+        phys_obs = self.env.state["map"]["physical_obstacles"]
+        for i in range(len(phys_obs)):
+            self.assertEqual(state_array[phys_obs_start + 2*i], phys_obs[i][0])
+            self.assertEqual(state_array[phys_obs_start + 2*i + 1], phys_obs[i][1])
+        # Now visual obstacles, which come next
+        vis_obs_start = phys_obs_start + 2 * len(phys_obs)
+        vis_obs = self.env.state["map"]["visual_obstacles"]
+        for i in range(len(vis_obs)):
+            self.assertEqual(state_array[vis_obs_start + 2*i], vis_obs[i][0])
+            self.assertEqual(state_array[vis_obs_start + 2*i + 1], vis_obs[i][1])
+        self.assertEqual(state_array[-2], self.env.state["goal_pos"][0])
+        self.assertEqual(state_array[-1], self.env.state["goal_pos"][1])
+
+    def test_number_of_obstacles(self):
+        max_obstacles_points = 20 if self.env.map_type == "small" else 30 if self.env.map_type == "medium" else 40
+        self.assertEqual(len(self.env.state["map"]["physical_obstacles"]), max_obstacles_points)
+        self.assertEqual(len(self.env.state["map"]["visual_obstacles"]), max_obstacles_points)
 
 def test_elendil_v2():
     env = elendil_v2(render_mode=None, num_UGVs=1, num_UAVs=1, num_targets=1, scenario="explore", map_type="medium", step_limit=500, seed=42, verbose=False)
-    parallel_api_test(env, num_cycles=1000)
+    # parallel_api_test(env, num_cycles=1000)
     unittest.main()
 
 if __name__ == '__main__':

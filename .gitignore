@@ -1,2 +1,6 @@
 /images/
 /old/
+.venv/
+elendil_v2.egg-info/
+__pycache__/
+

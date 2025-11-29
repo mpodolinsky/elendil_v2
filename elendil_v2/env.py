@@ -94,6 +94,7 @@ class elendil_v2(ParallelEnv):
         self.num_UGVs = num_UGVs
         self.num_UAVs = num_UAVs
         self.num_targets = num_targets
+        self.n_agents = self.num_UAVs + self.num_UGVs + self.num_targets
 
         self.render_mode = render_mode
         self.fig = None
@@ -222,11 +223,11 @@ class elendil_v2(ParallelEnv):
         - visual_obstacles : list of (x, y) coordinates
         '''
         if self.map_type == "small":
-            self.state["map"]["size"] = (10, 10)
+            self.state["map"]["size"] = [10, 10]
         if self.map_type == "medium":
-            self.state["map"]["size"] = (15, 15)
+            self.state["map"]["size"] = [15, 15]
         if self.map_type == "large":
-            self.state["map"]["size"] = (20, 20)
+            self.state["map"]["size"] = [20, 20]
 
         self.state["map"]["physical_obstacles"] = self._generate_obstacles()
         self.state["map"]["visual_obstacles"] = self._generate_obstacles()
@@ -269,34 +270,49 @@ class elendil_v2(ParallelEnv):
         print(print_map)
     
     def _generate_obstacles(self):
-        # TODO randomly generate obstacles based on map type
-        if self.map_type == "small": num_obstacles = 3
-        if self.map_type == "medium": num_obstacles = 4
-        if self.map_type == "large": num_obstacles = 5
+        if self.map_type == "small":
+            num_obstacles = 3
+            max_obstacle_points = 20
+        elif self.map_type == "medium":
+            num_obstacles = 4
+            max_obstacle_points = 30
+        else:
+            num_obstacles = 5
+            max_obstacle_points = 40
 
         created = 0
-        obstacle_coords = []
+        obstacle_coords = set()  # avoids duplicates
 
-        while created < num_obstacles:
+        H, W = self.state["map"]["size"]
 
-            # Random top-left
-            ox = int(self.np_random.integers(low = 0, high = self.state["map"]["size"][0], endpoint=False))
-            oy = int(self.np_random.integers(low = 0, high = self.state["map"]["size"][1], endpoint=False))
+        while created < num_obstacles and len(obstacle_coords) < max_obstacle_points:
+            ox = int(self.np_random.integers(0, H))
+            oy = int(self.np_random.integers(0, W))
 
-            # Random width and height
-            ow = int(self.np_random.integers(low = 1, high = int(self.state["map"]["size"][0] / 3), endpoint=False))
-            oh = int(self.np_random.integers(low = 1, high = int(self.state["map"]["size"][1] / 3), endpoint=False))
-            
+            ow = int(self.np_random.integers(1, max(2, H // 3)))
+            oh = int(self.np_random.integers(1, max(2, W // 3)))
+
             for x in range(ox, ox + ow):
                 for y in range(oy, oy + oh):
-                    if x >= self.state["map"]["size"][0] or y >= self.state["map"]["size"][1]:
-                        continue
-                    obstacle_coords.append([x, y])
+                    if 0 <= x < H and 0 <= y < W:
+                        if len(obstacle_coords) < max_obstacle_points:
+                            obstacle_coords.add((x, y))
+                        else:
+                            break
             created += 1
 
-        if self.verbose: print(f"Generated obstacle coordinates: {obstacle_coords}")
+        # Convert to array
+        obstacle_coords = list(obstacle_coords)
 
-        return np.array(obstacle_coords)
+        # ---- NEW: pad to exactly max_obstacle_points ----
+        if len(obstacle_coords) < max_obstacle_points:
+            missing = max_obstacle_points - len(obstacle_coords)
+            obstacle_coords.extend([(0, 0)] * missing)
+
+        # If somehow exceeded (shouldn't happen), truncate
+        obstacle_coords = obstacle_coords[:max_obstacle_points]
+
+        return np.array(obstacle_coords, dtype=int)
 
 
     # Observation space should be defined here.
@@ -690,7 +706,7 @@ class elendil_v2(ParallelEnv):
         # Destroy env object
         del self
 
-    def reset(self, seed=None, options=None):
+    def reset(self, seed=None, options=None, vector_observations=False):
         """
         Reset needs to initialize the `agents` attribute and must set up the
         environment so that render(), and step() can be called without issues.
@@ -717,13 +733,15 @@ class elendil_v2(ParallelEnv):
 
         # Generate observations for each agent
         observations = {agent: self._get_observation(agent) for agent in self.agents}
+        if vector_observations:
+            observations = {agent: self.get_vector_observation(agent) for agent in self.agents}
         infos = {agent: {} for agent in self.agents}
 
         self.num_moves = 0
 
         return observations, infos
 
-    def step(self, actions):
+    def step(self, actions, vector_observations=False):
         """
         step(action) takes in an action for each agent and should return the
         - observations
@@ -766,8 +784,11 @@ class elendil_v2(ParallelEnv):
         # Observations based on the new state so O(s')
         observations = {agent: self._get_observation(agent) for agent in self.agents}
 
+        if vector_observations:
+            observations = {agent: self.get_vector_observation(agent) for agent in self.agents}
+
         # Infos based on the new state so I(s')
-        infos = {agent: {self.np_random_seed} for agent in self.agents}
+        infos = {agent: {} for agent in self.agents}
 
         if self.render_mode == "human":
             self.render()
@@ -777,6 +798,43 @@ class elendil_v2(ParallelEnv):
 
         return observations, rewards, terminations, truncations, infos
     
+    def get_state_array(self):
+        """
+        Returns the environment state as a flattened numpy array of floats.
+        Flattens all entries in self.state including nested dictionaries (like map).
+        
+        Returns:
+            np.ndarray: A 1D numpy array of floats containing all state information
+        """
+        state_parts = []
+        
+        for key in self.state.keys():
+            value = self.state[key]
+            
+            if isinstance(value, dict):
+                # Handle nested dictionaries (like "map")
+                for nested_key in value.keys():
+                    nested_value = value[nested_key]
+                    if isinstance(nested_value, np.ndarray):
+                        state_parts.append(nested_value.flatten().astype(float))
+                    elif isinstance(nested_value, (list, tuple)):
+                        state_parts.append(np.array(nested_value, dtype=float).flatten())
+                    else:
+                        # Scalar value
+                        state_parts.append(np.array([float(nested_value)]))
+            elif isinstance(value, np.ndarray):
+                state_parts.append(value.flatten().astype(float))
+            elif isinstance(value, (list, tuple)):
+                state_parts.append(np.array(value, dtype=float).flatten())
+            else:
+                # Scalar value
+                state_parts.append(np.array([float(value)]))
+        
+        # Concatenate all parts into a single array
+        if state_parts:
+            return np.concatenate(state_parts)
+        else:
+            return np.array([], dtype=float)
 
     def _update_state(self, agent, action):
         '''
@@ -833,7 +891,7 @@ class elendil_v2(ParallelEnv):
             Sets the seed for this environment's random number generator(s).
             Also seeds all action spaces for deterministic action sampling.
             """
-            self.np_random, self.np_random_seed = seeding.np_random(seed)
+            self.np_random, self.np_random_seed = seeding.np_random(seed+100)
             
             # Seed all cached action spaces for deterministic sampling
             # This ensures action_space(agent).sample() is deterministic
@@ -1153,6 +1211,63 @@ class elendil_v2(ParallelEnv):
         
         return observation
 
+    def get_vector_observation(self, agent):
+        '''
+        Returns the observation for a given agent as a vector padded to the size of the UAV's observation space.
+        All observations are padded to match the maximum observation size (UAV observation space).
+        
+        Args:
+            agent: The agent name (e.g., "UAV_0", "UGV_0", "target_0")
+            
+        Returns:
+            np.ndarray: A vector observation padded to the UAV's observation space size
+        '''
+        # Get the UAV observation space size (maximum observation size)
+        uav_obs_size = self.observation_space("UAV_0").shape[0]
+        
+        # Get the observation for the given agent
+        obs = self._get_observation(agent)
+        
+        # Calculate how much padding is needed
+        padding_needed = uav_obs_size - len(obs)
+        
+        # Pad to the right with -10 to match UAV observation space size
+        if padding_needed > 0:
+            return np.pad(obs, (0, padding_needed), mode='constant', constant_values=-10)
+        else:
+            # If observation is already the right size or larger, return as is
+            return obs
+
+    def get_available_actions(self, agent):
+        '''
+        Returns the available actions for a given agent.
+        '''
+        # Ensure all available actions lists are of the same size (max_actions)
+        n_uav = self.action_space("UAV_0").n
+        n_ugv = self.action_space("UGV_0").n
+        n_target = self.action_space("UGV_0").n  # Targets share UGV actions
+
+        max_actions = max(n_uav, n_ugv, n_target)
+
+        available_actions_UAV = [1] * n_uav + [0] * (max_actions - n_uav)
+        available_actions_UGV = [1] * n_ugv + [0] * (max_actions - n_ugv)
+        available_actions_target = [1] * n_target + [0] * (max_actions - n_target)
+
+        if not len(available_actions_UAV) == len(available_actions_UGV) == len(available_actions_target):
+            raise ValueError("Available actions are not of the same size for all agents")
+
+        if agent.startswith("UAV"):
+            print(f"Available actions for {agent}: {available_actions_UAV}")
+            return available_actions_UAV
+        elif agent.startswith("UGV"):
+            print(f"Available actions for {agent}: {available_actions_UGV}")
+            return available_actions_UGV
+        elif agent.startswith("target"):
+            print(f"Available actions for {agent}: {available_actions_target}")
+            return available_actions_target
+        else:
+            raise ValueError("Unknown agent type: {}".format(agent))
+
     def _get_termination(self, agent, action):
         '''
         Termination logic:
@@ -1377,7 +1492,6 @@ class elendil_v2(ParallelEnv):
         return 0
     
 
-
 if __name__ == "__main__":
     env = elendil_v2(
         render_mode="human",
@@ -1392,33 +1506,40 @@ if __name__ == "__main__":
     )
 
     # Save rendering to file
-    # env.save_rendering("elendil_v2.png")
-    num_episodes = 1  # or whatever
-    for ep in range(num_episodes):
-        observations, infos = env.reset()
+    env.save_rendering("elendil_v2.png")
+    # print(env.state)
+    # print(env.get_state_array())
+    # print(f"Vector observation for UGV_0: {env.get_vector_observation('UGV_0')}")
 
-        # initialize done flags
-        terminations = {agent: False for agent in env.agents}
-        truncations = {agent: False for agent in env.agents}
+    # print(f"Vector observation for UAV_0: {env.get_vector_observation('UAV_0')}")
 
-        # run until everyone is done OR truncated
-        while not all(terminations[a] or truncations[a] for a in env.agents):
-            # only act for still-alive agents
-            alive_agents = [
-                a for a in env.agents
-                if not (terminations[a] or truncations[a])
-            ]
+    # print(f"Vector observation for target_0: {env.get_vector_observation('target_0')}")
+    # num_episodes = 1  # or whatever
+    # for ep in range(num_episodes):
+    #     observations, infos = env.reset()
 
-            actions = {
-                agent: env.action_space(agent).sample()
-                for agent in alive_agents
-            }
+    #     # initialize done flags
+    #     terminations = {agent: False for agent in env.agents}
+    #     truncations = {agent: False for agent in env.agents}
 
-            observations, rewards, terminations, truncations, infos = env.step(actions)
+    #     # run until everyone is done OR truncated
+    #     while not all(terminations[a] or truncations[a] for a in env.agents):
+    #         # only act for still-alive agents
+    #         alive_agents = [
+    #             a for a in env.agents
+    #             if not (terminations[a] or truncations[a])
+    #         ]
 
-            env.viz_map()
-            # pick any agent that still exists (may be done, but fine for debugging)
-            env.viz_observation(env.agents[0])
-            time.sleep(0.2)
+    #         actions = {
+    #             agent: env.action_space(agent).sample()
+    #             for agent in alive_agents
+    #         }
 
-    env.close()
+    #         observations, rewards, terminations, truncations, infos = env.step(actions)
+
+    #         env.viz_map()
+    #         # pick any agent that still exists (may be done, but fine for debugging)
+    #         env.viz_observation(env.agents[0])
+    #         time.sleep(0.2)
+
+    # env.close()
