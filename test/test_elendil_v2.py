@@ -24,7 +24,7 @@ def states_equal(s1, s2):
 class TestElendilV2(unittest.TestCase):
     
     def setUp(self):
-        self.env = elendil_v2(render_mode=None, num_UGVs=1, num_UAVs=1, num_targets=1, scenario="explore", map_type="medium", step_limit=500, seed=42, verbose=False)
+        self.env = elendil_v2(render_mode=None, num_UGVs=1, num_UAVs=1, num_targets=1, scenario="explore", target_movement_pattern=None, map_type="medium", step_limit=500, seed=42, verbose=False)
         self.env.reset()
         pass
 
@@ -551,6 +551,7 @@ class TestElendilV2(unittest.TestCase):
         self.env.state["UAV_0_pos"] = np.array([9,8])
         self.env.state["UGV_0_pos"] = np.array([9,9])
         obs, rewards, terminations, truncations, infos = self.env.step({agent: 4 for agent in self.env.possible_agents})
+        self.env.viz_map()
         self.assertFalse(terminations["UAV_0"])
         self.assertTrue(terminations["UGV_0"])
         self.assertFalse(terminations["target_0"])
@@ -670,6 +671,74 @@ class TestElendilV2(unittest.TestCase):
         
         self.assertTrue((self.env.state["UGV_0_pos"] == np.array([0, 0])).all())
         self.assertTrue((self.env.state["UAV_0_pos"] == np.array([1, 0])).all())
+
+    def test_update_state_obstacle_collision_reward(self):
+        rewards = {agent: -0.02 for agent in self.env.possible_agents}
+        self.env.state["UGV_0_pos"] = np.array([0, 0])
+        self.env.state["UAV_0_pos"] = np.array([0, 0])
+        self.env.state["goal_pos"] = np.array([10,10])
+        self.env._update_distance_to_goal()
+        self.env.state["map"]["physical_obstacles"] = np.array([[1, 0]])
+        self.env.state["map"]["visual_obstacles"] = np.array([[1, 0]])
+        obs, rewards, terminations, truncations, infos = self.env.step({agent: 3 for agent in self.env.possible_agents})
+        
+        self.assertTrue((self.env.state["UGV_0_pos"] == np.array([0, 0])).all())
+        self.assertTrue((self.env.state["UAV_0_pos"] == np.array([1, 0])).all())
+        self.assertEqual(rewards["UGV_0"], self.env.reward_weights["obstacle_penalty"] + self.env.reward_weights["step_penalty"]) # UGV bumped into obstacle
+        self.assertEqual(rewards["UAV_0"], 0 + self.env.reward_weights["step_penalty"] + self.env.reward_weights["agent_moved_towards_goal"]) # UAV didn't bump into obstacle
+
+    def test_target_reward_0_if_target_movement_pattern_is_random(self):
+        # TODO:
+        self.env = elendil_v2(render_mode=None, num_UGVs=1, num_UAVs=1, num_targets=1, target_movement_pattern="random", scenario="explore", map_type="medium", step_limit=500, seed=42, verbose=False)
+        target_rewards = 0
+        uav_rewards = 0
+        ugv_rewards = 0
+        terminations = {agent: False for agent in self.env.agents}
+        truncations = {agent: False for agent in self.env.agents}
+
+        while not all(terminations[a] or truncations[a] for a in self.env.agents):
+            alive_agents = [
+                a for a in self.env.agents
+                if not (terminations[a] or truncations[a])
+            ]
+            actions = {
+                agent: self.env.action_space(agent).sample()
+                for agent in alive_agents
+            }
+            observations, rewards, terminations, truncations, infos = self.env.step(actions)
+            target_rewards += rewards["target_0"]
+            uav_rewards += rewards["UAV_0"]
+            ugv_rewards += rewards["UGV_0"]
+
+        self.assertEqual(target_rewards, 0)
+        self.assertNotEqual(uav_rewards, 0)
+        self.assertNotEqual(ugv_rewards, 0)
+        pass
+
+    def test_update_distance_to_goal(self):
+        self.env.state["goal_pos"] = np.array([5,5])
+        self.env.state["UAV_0_pos"] = np.array([5,2])   
+        self.env.state["UGV_0_pos"] = np.array([2,5])
+        self.env._update_distance_to_goal()
+        self.assertEqual(self.env.distance_to_goal["UAV_0"], 3)
+        self.assertEqual(self.env.distance_to_goal["UGV_0"], 3)
+
+    def test_rewards_for_aproaching_goal(self):
+        self.env.state["goal_pos"] = np.array([5,5])
+        self.env.state["UAV_0_pos"] = np.array([5,2])
+        self.env.state["UGV_0_pos"] = np.array([2,5])
+        self.env.state["target_0_pos"] = np.array([10,10])
+        self.env._update_distance_to_goal()
+        self.assertEqual(self.env.distance_to_goal["UAV_0"], 3)
+        self.assertEqual(self.env.distance_to_goal["UGV_0"], 3)
+        obs, rewards, terminations, truncations, infos = self.env.step({"UAV_0": 1, "UGV_0": 3, "target_0": 4})
+        self.assertEqual(self.env.distance_to_goal["UAV_0"], 4)
+        self.assertEqual(self.env.distance_to_goal["UGV_0"], 2)
+        self.assertEqual(self.env.reduced_distance_to_goal["UAV_0"], False)
+        self.assertEqual(self.env.reduced_distance_to_goal["UGV_0"], True)
+        self.assertEqual(rewards["UAV_0"], self.env.reward_weights["step_penalty"])
+        self.assertEqual(rewards["UGV_0"], self.env.reward_weights["agent_moved_towards_goal"] + self.env.reward_weights["step_penalty"])
+        pass
 
     def test_get_state_array(self):
         """Test that get_state_array works correctly"""

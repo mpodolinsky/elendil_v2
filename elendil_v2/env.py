@@ -25,6 +25,7 @@ class elendil_v2(ParallelEnv):
                  num_UAVs=1, 
                  num_targets=1, 
                  scenario="explore", 
+                 target_movement_pattern=None,
                  map_type="medium",
                  communication_style="none",
                  step_limit=500,
@@ -84,6 +85,10 @@ class elendil_v2(ParallelEnv):
         # self.np_random_seed = seed
         self.verbose = verbose
         self.scenario = scenario
+        self.target_movement_pattern = target_movement_pattern
+        if self.target_movement_pattern == "random":
+            self.target_last_action = None
+            self.target_remaining_steps = 0
         self.communication_style = communication_style
         self.map = {}
         self.map_type = map_type
@@ -114,16 +119,22 @@ class elendil_v2(ParallelEnv):
         self.reward_weights = {}
         self.reward_weights["step_penalty"] = -0.01 
         self.reward_weights["obstacle_penalty"] = -0.02
+        self.reward_weights["agent_moved_towards_goal"] = +0.05
         self.reward_weights["agent_found_target"] = +1
         self.reward_weights["agent_found_by_target"] = -10
         self.reward_weights["target_found_agent"] = +10
         self.reward_weights["target_found_by_agent"] = -1
         self.reward_weights["agent_reached_goal"] = +10
         
+        
         self.state = {}
 
         # Generation of agent objects
         self.possible_agents = []
+
+        self.hit_obstacle = {agent: False for agent in self.possible_agents}
+        self.distance_to_goal = {agent: np.array([np.inf], dtype=float) for agent in self.possible_agents}
+        self.reduced_distance_to_goal = {agent: False for agent in self.possible_agents}
 
         # UAV
         for i in range(self.num_UAVs):
@@ -329,18 +340,21 @@ class elendil_v2(ParallelEnv):
         - [5] fov (h)
         - [6, 6 + fov**2] vel target (if in fov) (vx, vy)
         - [7 + fov**2, 9] position target (if in fov, or if communication allows) (x, y) * num_targets
+        - goal position (x, y)
         UGV:
         - position (x, y)
         - vel (vx, vy)
         - fov (h)
         - vel target (if in fov) (vx, vy)
         - position target (if in fov, or if communication allows) (x, y) * num_targets
+        - goal position (x, y)
         Target:
         - position (x, y)
         - vel (vx, vy)
         - fov (h)
         - vel agents (if in fov) (vx, vy) * (num_UAVs + num_UGVs)
         - position agents (if in fov) (x, y) * (num_UAVs + num_UGVs)
+        - # NOT INCLUDED: goal position (x, y)
         '''
         # gymnasium spaces are defined and documented here: https://gymnasium.farama.org/api/spaces/
 
@@ -356,11 +370,13 @@ class elendil_v2(ParallelEnv):
         g = int(np.size(self.state[f"UAV_0_vel"])) * (self.num_UAVs + self.num_UGVs)  # 2 * (num_UAVs + num_UGVs)
         h = int(np.size(self.state[f"UAV_0_pos"])) * (self.num_UAVs + self.num_UGVs)  # 2 * (num_UAVs + num_UGVs)
 
+        i = 2 # goal position (x, y)
+
         if self.verbose: print(f"Defining observation space for agent: {agent}")
         if agent.startswith("UAV"):
-            return Box(low=-10, high=np.inf, shape=(a + b + c + d + e + f,), dtype=np.float32)
+            return Box(low=-10, high=np.inf, shape=(a + b + c + d + e + f + i,), dtype=np.float32)
         elif agent.startswith("UGV"):
-            return Box(low=-10, high=np.inf, shape=(a + b + d + e + f,), dtype=np.float32) 
+            return Box(low=-10, high=np.inf, shape=(a + b + d + e + f + i,), dtype=np.float32) 
         elif agent.startswith("target"):
             return Box(low=-10, high=np.inf, shape=(a + b + d + g + h,), dtype=np.float32) 
         else:
@@ -833,6 +849,44 @@ class elendil_v2(ParallelEnv):
         # Destroy env object
         del self
 
+    def _update_distance_to_goal(self):
+        '''
+        Updates the distance to goal for all agents.
+        If distance have not been updated yet updates distances and returns False for reduced_distance_to_goal
+        Else, updates distances and returns True for reduced_distance_to_goal if the distance to goal has been reduced, False otherwise
+        '''
+        # Extract old distances as scalars (handle array/list/scalar cases)
+        old_distance_to_goal = {}
+        for agent in self.possible_agents:
+            old_val = self.distance_to_goal[agent]
+            if isinstance(old_val, np.ndarray):
+                old_distance_to_goal[agent] = old_val.item() if old_val.size == 1 else old_val[0]
+            elif isinstance(old_val, list):
+                old_distance_to_goal[agent] = old_val[0] if len(old_val) > 0 else np.inf
+            else:
+                old_distance_to_goal[agent] = float(old_val)
+        
+        # Calculate new distances
+        new_distance_to_goal = {agent: np.linalg.norm(np.array(self.state[f"{agent}_pos"]) - np.array(self.state["goal_pos"]), ord=1) for agent in self.possible_agents}
+
+        # Check if this is the first update (all distances are infinity)
+        is_first_update = all(np.isinf(old_distance_to_goal[agent]) for agent in self.possible_agents)
+        
+        # Update distances
+        for agent in self.possible_agents: 
+            self.distance_to_goal[agent] = new_distance_to_goal[agent]
+
+        # Calculate if distance was reduced
+        if is_first_update:
+            self.reduced_distance_to_goal = {agent: False for agent in self.possible_agents}
+            return 0 
+        else:
+            self.reduced_distance_to_goal = {
+                agent: (new_distance_to_goal[agent] - old_distance_to_goal[agent]) < 0 
+                for agent in self.possible_agents
+            }
+            return 0
+
     def reset(self, seed=None, options=None, vector_observations=False):
         """
         Reset needs to initialize the `agents` attribute and must set up the
@@ -844,6 +898,9 @@ class elendil_v2(ParallelEnv):
         if seed is not None:
             self._set_seed(seed)
 
+        self.hit_obstacle = {agent: False for agent in self.possible_agents}
+        self.distance_to_goal = {agent: [np.inf] for agent in self.possible_agents}
+
         self.step_count = 0
 
         self._generate_map()
@@ -854,6 +911,13 @@ class elendil_v2(ParallelEnv):
             self._place_agent(agent)
 
         self._place_agent("goal")
+
+        if self.target_movement_pattern == "random":
+            # Place target at the goal position
+            x, y = self.state["goal_pos"]
+            self.state[f"target_0_pos"] = np.array([x, y], dtype=int)
+
+        self._update_distance_to_goal()
 
         if self.verbose:
             self.viz_map()
@@ -880,9 +944,13 @@ class elendil_v2(ParallelEnv):
         """
         self.step_count += 1
 
+        self.hit_obstacle = {agent: False for agent in self.possible_agents} # Reset hit obstacle flag for all agents
+
         # User passes an action for each agent
         for agent in self.agents:
             self._update_state(agent, actions.get(agent))
+        
+        self._update_distance_to_goal()
 
         # Reward based on the new state so R(s')
         rewards = {agent: self._get_reward(agent, actions.get(agent, 0)) for agent in self.agents}
@@ -976,6 +1044,16 @@ class elendil_v2(ParallelEnv):
         agent_type = agent.split("_")[0]
         action_str = str(action)
 
+        if agent_type == "target" and self.target_movement_pattern == "random":
+            #TODO: implement a predefined movement pattern
+            if self.target_remaining_steps == 0:
+                self.target_remaining_steps = self.np_random.integers(low = 1, high = 5)
+                self.target_last_action = self._target_random_action(agent)
+            else:
+                self.target_remaining_steps -= 1
+                action = self.target_last_action
+            action_str = str(action)
+
         if self.verbose:
             print(f"Updating state for {agent} with action {action}, {self.possible_actions[agent_type][action_str][0]}")
         
@@ -984,9 +1062,10 @@ class elendil_v2(ParallelEnv):
             movement = self.possible_actions[agent_type][action_str][0]
             new_x = max(0, min(self.state[f"{agent}_pos"][0] + movement[0], self.state["map"]["size"][0] - 1))
             new_y = max(0, min(self.state[f"{agent}_pos"][1] + movement[1], self.state["map"]["size"][1] - 1))
-            if [new_x, new_y] in self.state["map"]["physical_obstacles"].tolist() and agent.startswith("UGV"):
+            if [new_x, new_y] in self.state["map"]["physical_obstacles"].tolist() and (agent.startswith("UGV") or agent.startswith("target")):
                 new_x = self.state[f"{agent}_pos"][0]
                 new_y = self.state[f"{agent}_pos"][1]
+                self.hit_obstacle[agent] = True
             else:
                 self.state[f"{agent}_pos"][0] = new_x
                 self.state[f"{agent}_pos"][1] = new_y
@@ -1001,6 +1080,12 @@ class elendil_v2(ParallelEnv):
             self.state[f"{agent}_altitude"][0] = max(0, min(int(new_altitude), 2))
 
         return 0
+
+    def _target_random_action(self, agent):
+        '''
+        Returns a random action for a target agent.
+        '''
+        return self.np_random.integers(low = 0, high = 5)
 
     def _place_agent(self, agent_name):
         # Generate random position within map bounds
@@ -1038,6 +1123,7 @@ class elendil_v2(ParallelEnv):
         - UAV & UGV: 
             - -0.01 reward for each step taken
             - -0.02 for bumping into a physical obstacle
+            - +0.05 for moving towards the goal
             - -1 for being in the field of view of a target (terminates the agent)
             - +1 point for observing the target
             - +10 points for reaching the goal
@@ -1056,13 +1142,15 @@ class elendil_v2(ParallelEnv):
         if agent.startswith("UAV") or agent.startswith("UGV"):
             reward += self.reward_weights["step_penalty"]
             # Check for bumping into physical obstacle
-            agent_pos_list = [int(agent_pos[0]), int(agent_pos[1])]
-            if agent_pos_list in self.state["map"]["physical_obstacles"].tolist():
+            if self.hit_obstacle[agent]:
                 reward += self.reward_weights["obstacle_penalty"]
             
             # Check if reached goal
             if np.array_equal(agent_pos, self.state["goal_pos"]):
                 reward += self.reward_weights["agent_reached_goal"]
+
+            if self.reduced_distance_to_goal[agent]:
+                reward += self.reward_weights["agent_moved_towards_goal"]
             
             # Check if agent is in FOV of any target (termination condition)
             ax, ay = int(agent_pos[0]), int(agent_pos[1])
@@ -1112,6 +1200,10 @@ class elendil_v2(ParallelEnv):
                     dy = abs(ty - oy)
                     if dx <= agent_half_fov and dy <= agent_half_fov:
                         reward += self.reward_weights["target_found_agent"]
+
+        if self.target_movement_pattern == "random" and agent.startswith("target"): 
+            # We don't want to pullut the reward system by giving rewards for targets that are not being trained
+            reward = 0
 
         return reward
 
@@ -1292,6 +1384,10 @@ class elendil_v2(ParallelEnv):
             
             obs_parts.append(target_vels)
             obs_parts.append(target_positions)
+
+            # Add the goal position
+            obs_parts.append(self.state["goal_pos"])
+
             
         elif agent.startswith("target"):
             # Agent velocities and positions
@@ -1621,7 +1717,6 @@ class elendil_v2(ParallelEnv):
     
 
 if __name__ == "__main__":
-    import imageio
     from datetime import datetime
     
     env = elendil_v2(
@@ -1630,11 +1725,19 @@ if __name__ == "__main__":
         num_UAVs=1,
         num_targets=1,
         scenario="explore",
+        target_movement_pattern="random",
         map_type="medium",
         step_limit=500,
         seed=43,
         verbose=False,
     )
+    
+    # Check if we should record video (only for rgb_array mode)
+    record_video = (env.render_mode == "rgb_array")
+    
+    # Only import imageio if we're recording video
+    if record_video:
+        import imageio
 
     # Save rendering to file
     # env.save_rendering("elendil_v2.png")
@@ -1648,16 +1751,23 @@ if __name__ == "__main__":
     num_episodes = 1  # or whatever
     
     for ep in range(num_episodes):
-        print(f"Starting episode {ep} recording...")
+        if record_video:
+            print(f"Starting episode {ep} recording...")
+        else:
+            print(f"Starting episode {ep}...")
+            
         observations, infos = env.reset()
         
-        # List to store frames for video recording
-        frames = []
-        
-        # Record initial frame
-        frame = env.render()
-        if frame is not None:
-            frames.append(frame)
+        # List to store frames for video recording (only if recording)
+        frames = [] if record_video else None
+
+        # Render initial frame
+        if record_video:
+            frame = env.render()
+            if frame is not None:
+                frames.append(frame)
+        else:
+            env.render()  # Just render for display
 
         # initialize done flags
         terminations = {agent: False for agent in env.agents}
@@ -1678,18 +1788,18 @@ if __name__ == "__main__":
 
             observations, rewards, terminations, truncations, infos = env.step(actions)
             
-            # Record frame after each step
-            frame = env.render()
-            if frame is not None:
-                frames.append(frame)
-            
-            # Optional: Uncomment for debugging
-            # env.viz_map()
-            # env.viz_observation(env.agents[0])
-            # time.sleep(0.2)
+            # Render and optionally record frame
+            if record_video:
+                frame = env.render()
+                if frame is not None:
+                    frames.append(frame)
+            else:
+                env.render()  # Just render for display
+                # Debug output for human mode
+                # time.sleep(0.2)
         
-        # Save video after episode completes
-        if frames:
+        # Save video after episode completes (only if recording)
+        if record_video and frames:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             video_filename = f"elendil_v2_episode_{ep}_{timestamp}.mp4"
             imageio.mimsave(video_filename, frames, fps=10)
