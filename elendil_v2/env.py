@@ -370,17 +370,17 @@ class elendil_v2(ParallelEnv):
     # If your spaces change over time, remove this line (disable caching).
     @functools.lru_cache(maxsize=None)
     def action_space(self, agent):
-        print(f"Defining action space for agent: {agent}")
+        # print(f"Defining action space for agent: {agent}")
         if agent.startswith("UAV"):
-            print(f"-->Action space for {agent} is Discrete(8)")
+            # print(f"-->Action space for {agent} is Discrete(8)")
             space = Discrete(8) # TODO implement UAV action space
                 
         elif agent.startswith("UGV"):
-            print(f"-->Action space for {agent} is Discrete(5)")
+            # print(f"-->Action space for {agent} is Discrete(5)")
             space = Discrete(5) # TODO implement UGV action space
                 
         elif agent.startswith("target"):
-            print(f"-->Action space for {agent} is Discrete(5)")
+            # print(f"-->Action space for {agent} is Discrete(5)")
             space = Discrete(5) # TODO implement target action space
         
         else:
@@ -901,7 +901,7 @@ class elendil_v2(ParallelEnv):
                     action_space = self.action_space(agent)
                     action_space.seed(self.np_random_seed)
             
-            print(f"Environment seed set to: {self.np_random_seed}")
+            # print(f"Environment seed set to: {self.np_random_seed}")
             return 0
             
     def _get_reward(self, agent, action):
@@ -1257,13 +1257,13 @@ class elendil_v2(ParallelEnv):
             raise ValueError("Available actions are not of the same size for all agents")
 
         if agent.startswith("UAV"):
-            print(f"Available actions for {agent}: {available_actions_UAV}")
+            # print(f"Available actions for {agent}: {available_actions_UAV}")
             return available_actions_UAV
         elif agent.startswith("UGV"):
-            print(f"Available actions for {agent}: {available_actions_UGV}")
+            # print(f"Available actions for {agent}: {available_actions_UGV}")
             return available_actions_UGV
         elif agent.startswith("target"):
-            print(f"Available actions for {agent}: {available_actions_target}")
+            # print(f"Available actions for {agent}: {available_actions_target}")
             return available_actions_target
         else:
             raise ValueError("Unknown agent type: {}".format(agent))
@@ -1506,7 +1506,7 @@ if __name__ == "__main__":
     )
 
     # Save rendering to file
-    env.save_rendering("elendil_v2.png")
+    # env.save_rendering("elendil_v2.png")
     # print(env.state)
     # print(env.get_state_array())
     # print(f"Vector observation for UGV_0: {env.get_vector_observation('UGV_0')}")
@@ -1514,32 +1514,32 @@ if __name__ == "__main__":
     # print(f"Vector observation for UAV_0: {env.get_vector_observation('UAV_0')}")
 
     # print(f"Vector observation for target_0: {env.get_vector_observation('target_0')}")
-    # num_episodes = 1  # or whatever
-    # for ep in range(num_episodes):
-    #     observations, infos = env.reset()
+    num_episodes = 1  # or whatever
+    for ep in range(num_episodes):
+        observations, infos = env.reset()
 
-    #     # initialize done flags
-    #     terminations = {agent: False for agent in env.agents}
-    #     truncations = {agent: False for agent in env.agents}
+        # initialize done flags
+        terminations = {agent: False for agent in env.agents}
+        truncations = {agent: False for agent in env.agents}
 
-    #     # run until everyone is done OR truncated
-    #     while not all(terminations[a] or truncations[a] for a in env.agents):
-    #         # only act for still-alive agents
-    #         alive_agents = [
-    #             a for a in env.agents
-    #             if not (terminations[a] or truncations[a])
-    #         ]
+        # run until everyone is done OR truncated
+        while not all(terminations[a] or truncations[a] for a in env.agents):
+            # only act for still-alive agents
+            alive_agents = [
+                a for a in env.agents
+                if not (terminations[a] or truncations[a])
+            ]
 
-    #         actions = {
-    #             agent: env.action_space(agent).sample()
-    #             for agent in alive_agents
-    #         }
+            actions = {
+                agent: env.action_space(agent).sample()
+                for agent in alive_agents
+            }
 
-    #         observations, rewards, terminations, truncations, infos = env.step(actions)
+            observations, rewards, terminations, truncations, infos = env.step(actions)
 
-    #         env.viz_map()
-    #         # pick any agent that still exists (may be done, but fine for debugging)
-    #         env.viz_observation(env.agents[0])
-    #         time.sleep(0.2)
+            env.viz_map()
+            # pick any agent that still exists (may be done, but fine for debugging)
+            env.viz_observation(env.agents[0])
+            time.sleep(0.2)
 
-    # env.close()
+    env.close()
