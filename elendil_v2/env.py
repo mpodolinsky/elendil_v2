@@ -17,7 +17,7 @@ import time
 
 
 class elendil_v2(ParallelEnv):
-    metadata = {"render_modes": ["human"], "name": "elendil_v2"}
+    metadata = {"render_modes": ["human", "rgb_array"], "name": "elendil_v2"}
 
     def __init__(self, 
                  render_mode=None, 
@@ -446,8 +446,135 @@ class elendil_v2(ParallelEnv):
         """
         if self.render_mode == "human":
             self._render_gui()
+        elif self.render_mode == "rgb_array":
+            return self._render_rgb_array()
         else:
-            self.viz_map()
+            # self.viz_map()
+            pass
+
+    def _render_rgb_array(self):
+        """
+        Renders the environment as an RGB array.
+        
+        Returns:
+            np.ndarray: RGB array of shape (height, width, 3) with dtype uint8
+                       representing the current state of the environment.
+        """
+        # Create a temporary figure for rendering (non-interactive)
+        temp_fig, temp_ax = plt.subplots(figsize=(10, 10))
+        was_interactive = plt.isinteractive()
+        plt.ioff()  # Turn off interactive mode
+        
+        # Get map size
+        map_width, map_height = self.state["map"]["size"]
+        
+        # Set up the plot
+        temp_ax.set_xlim(-0.5, map_width - 0.5)
+        temp_ax.set_ylim(-0.5, map_height - 0.5)
+        temp_ax.set_aspect('equal')
+        temp_ax.grid(True, alpha=0.3)
+        temp_ax.set_title('ELENDIL v2 Environment')
+        temp_ax.invert_yaxis()  # Match typical grid coordinates
+        
+        # Draw physical obstacles
+        if "physical_obstacles" in self.state["map"]:
+            for obs in self.state["map"]["physical_obstacles"]:
+                x, y = obs
+                rect = patches.Rectangle((x - 0.5, y - 0.5), 1, 1, 
+                                        linewidth=1, edgecolor='black', 
+                                        facecolor='lightgray', alpha=0.7,
+                                        linestyle='--')
+                temp_ax.add_patch(rect)
+        
+        # Draw visual obstacles
+        if "visual_obstacles" in self.state["map"]:
+            for obs in self.state["map"]["visual_obstacles"]:
+                x, y = obs
+                # Skip if it's also a physical obstacle; outline should be green dashed
+                if [x, y] in self.state["map"]["physical_obstacles"].tolist():
+                    rect = patches.Rectangle((x - 0.5, y - 0.5), 1, 1, 
+                                            linewidth=2, edgecolor='green', 
+                                            facecolor='lightgray', linestyle='--', alpha=0.5)
+                    temp_ax.add_patch(rect)
+                else: 
+                    rect = patches.Rectangle((x - 0.5, y - 0.5), 1, 1, 
+                                            linewidth=1, edgecolor='black', 
+                                            facecolor='lightgreen', linestyle='--', alpha=0.5)
+                    temp_ax.add_patch(rect)
+        
+        # Draw goal (green star)
+        if "goal_pos" in self.state:
+            gx, gy = self.state["goal_pos"]
+            temp_ax.plot(gx, gy, 'g*', markersize=20, label='Goal')
+        
+        # Draw agents
+        for agent in self.possible_agents:
+            if agent.startswith("UAV"):
+                x, y = self.state[f"{agent}_pos"]
+                altitude = self.state.get(f"{agent}_altitude", [0])[0]
+                # UAVs shown as blue squares, size based on altitude
+                size = 10 + altitude * 5
+                temp_ax.plot(x, y, f'bs', markersize=size, label='UAV' if agent == self.possible_agents[0] else '')
+                temp_ax.text(x + 0.3, y + 0.3, agent.split('_')[1], fontsize=8)
+                temp_ax.text(x + 0.3, y - 0.2, f'{altitude}', fontsize=8)
+
+                # Draw the UAV FOV grid
+                fov_dim = self.state[f"{agent}_fov_dim"]
+                cx, cy = x, y  # agent center position
+
+                # Draw FOV boxes only for FOV cells not equal to -10
+                fov_grid_flat = self.state[f"{agent}_fov"]
+                fov_grid = fov_grid_flat.reshape(fov_dim, fov_dim)
+                center_idx = fov_dim // 2
+                for dx in range(-center_idx, fov_dim - center_idx):
+                    for dy in range(-center_idx, fov_dim - center_idx):
+                        fx, fy = center_idx + dx, center_idx + dy
+                        if 0 <= fx < fov_dim and 0 <= fy < fov_dim:
+                            if fov_grid[fx, fy] != -10:
+                                px = cx + dx
+                                py = cy + dy
+                                rect = patches.Rectangle((px - 0.5, py - 0.5), 1, 1, 
+                                                        linewidth=1, edgecolor='blue', linestyle='--', alpha=0.1)
+                                temp_ax.add_patch(rect)
+                
+            elif agent.startswith("UGV"):
+                x, y = self.state[f"{agent}_pos"]
+                # UGVs shown as blue circles
+                temp_ax.plot(x, y, f'bo', markersize=12, label='UGV' if agent == self.possible_agents[0] else '')
+                temp_ax.text(x + 0.3, y + 0.3, agent.split('_')[1], fontsize=8)
+            elif agent.startswith("target"):
+                x, y = self.state[f"{agent}_pos"]
+                # Targets shown as red triangles
+                temp_ax.plot(x, y, f'r^', markersize=12, label='Target' if agent == self.possible_agents[0] else '')
+                temp_ax.text(x + 0.3, y + 0.3, agent.split('_')[1], fontsize=8)
+        
+        temp_ax.legend(loc='upper right')
+        
+        # Configure the grid so that it matches the outer borders of each cell
+        grid_size_x, grid_size_y = self.state["map"]["size"]
+        temp_ax.set_xticks(np.arange(-0.5, grid_size_x, 1), minor=True)
+        temp_ax.set_yticks(np.arange(-0.5, grid_size_y, 1), minor=True)
+        temp_ax.grid(which='minor', color='k', linestyle='-', linewidth=0.6, alpha=0.3)
+        temp_ax.grid(which='major', alpha=0)  # Hide major gridlines
+        
+        # Render the figure to the canvas
+        temp_fig.canvas.draw()
+        
+        # Get the RGB buffer from the figure
+        buf = np.frombuffer(temp_fig.canvas.tostring_rgb(), dtype=np.uint8)
+        width, height = temp_fig.canvas.get_width_height()
+        
+        # Reshape to (height, width, 3) for RGB array
+        rgb_array = buf.reshape(height, width, 3)
+        
+        # Close the temporary figure
+        plt.close(temp_fig)
+        
+        # Restore interactive mode if it was on
+        if was_interactive:
+            plt.ion()
+        
+        return rgb_array
     
     def _render_gui(self):
         """
@@ -794,7 +921,8 @@ class elendil_v2(ParallelEnv):
             self.render()
 
         if self.render_mode == "rgb_array":
-            pass # TODO implement rgb_array render mode
+
+            pass # TODO: implement rgb_array render mode
 
         return observations, rewards, terminations, truncations, infos
     
@@ -1493,8 +1621,11 @@ class elendil_v2(ParallelEnv):
     
 
 if __name__ == "__main__":
+    import imageio
+    from datetime import datetime
+    
     env = elendil_v2(
-        render_mode="human",
+        render_mode="rgb_array",
         num_UGVs=1,
         num_UAVs=1,
         num_targets=1,
@@ -1502,7 +1633,7 @@ if __name__ == "__main__":
         map_type="medium",
         step_limit=500,
         seed=43,
-        verbose=True,
+        verbose=False,
     )
 
     # Save rendering to file
@@ -1515,8 +1646,18 @@ if __name__ == "__main__":
 
     # print(f"Vector observation for target_0: {env.get_vector_observation('target_0')}")
     num_episodes = 1  # or whatever
+    
     for ep in range(num_episodes):
+        print(f"Starting episode {ep} recording...")
         observations, infos = env.reset()
+        
+        # List to store frames for video recording
+        frames = []
+        
+        # Record initial frame
+        frame = env.render()
+        if frame is not None:
+            frames.append(frame)
 
         # initialize done flags
         terminations = {agent: False for agent in env.agents}
@@ -1536,10 +1677,22 @@ if __name__ == "__main__":
             }
 
             observations, rewards, terminations, truncations, infos = env.step(actions)
-
-            env.viz_map()
-            # pick any agent that still exists (may be done, but fine for debugging)
-            env.viz_observation(env.agents[0])
-            time.sleep(0.2)
+            
+            # Record frame after each step
+            frame = env.render()
+            if frame is not None:
+                frames.append(frame)
+            
+            # Optional: Uncomment for debugging
+            # env.viz_map()
+            # env.viz_observation(env.agents[0])
+            # time.sleep(0.2)
+        
+        # Save video after episode completes
+        if frames:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            video_filename = f"elendil_v2_episode_{ep}_{timestamp}.mp4"
+            imageio.mimsave(video_filename, frames, fps=10)
+            print(f"Episode {ep} recorded and saved to: {video_filename}")
 
     env.close()
